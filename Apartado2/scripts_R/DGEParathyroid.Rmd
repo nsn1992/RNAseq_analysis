@@ -1,0 +1,404 @@
+---
+title: "DGEParathyroid"
+output: html_document
+date: "2024-03-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# LIBRERIAS UTILIZADAS Y VERSIONES
+```{r part1}
+# Cargo librerias e imprimo su versión
+library(DESeq2)
+versionDESEQ <- packageVersion("DESeq2")
+print(paste("DESeq2 version es:", versionDESEQ))
+library(ggplot2)
+versionggplot2 <- packageVersion("ggplot2")
+print(paste("ggplot2 version es:",versionggplot2))
+library(pheatmap)
+versionheatmap <- packageVersion("pheatmap")
+print(paste("pheatmap version es:",versionheatmap))
+library(AnnotationDbi)
+versionAnnotationDbi <- packageVersion("AnnotationDbi")
+print(paste("AnnotationDbi version es:", versionAnnotationDbi))
+library(org.Hs.eg.db)
+versionorg.Hs.eg.db <- packageVersion("org.Hs.eg.db")
+print(paste("org.Hs.eg.db version es:", versionorg.Hs.eg.db))
+library(RColorBrewer)
+versionRColorBrewer<- packageVersion("RColorBrewer")
+print(paste("RColorBrewer version es:", versionRColorBrewer))
+```
+
+## LECTURA DE DATOS Y CONVERSIÓN DE VARIABLES A FACTORES
+
+```{r part2, echo=FALSE}
+# Leo datos de la carpeta input (metadata.tsv y rawcounts.tsv)
+rawcounts <- read.table("~/Documentos/Transcriptómica/transcriptomic-final-exercise/Apartado2/input/rawcounts.tsv", header = TRUE, sep = "\t", row.names = 1)
+metadata <- read.table("~/Documentos/Transcriptómica/transcriptomic-final-exercise/Apartado2/input/metadata.tsv", header = TRUE, sep = "\t", row.names = 1)
+# Establecemos como factores las variables
+metadata$patient <- factor(metadata$patient)
+metadata$agent <- factor(metadata$agent)
+metadata$time <- factor(metadata$time)
+```
+
+## ANÁLISIS EXPLORATORIO INICIAL
+```{r part3}
+# Análisis exploratorio inicial con diseño 1 que incluye las 3 variables y todos los datos sin filtrar
+dds <- DESeqDataSetFromMatrix(countData = rawcounts,
+                              colData = metadata,
+                              design = ~ patient+agent+time)
+# Vemos el contenido. Matriz de 53160 filas y 24 columnas
+colData(dds)
+# Filtro para quedarme con genes de al menos 10 cuentas
+keep <- rowSums(counts(dds)) >= 10 
+dds <- dds[keep, ]
+# Hago una transformación con vst() útil para representaciones gráficas.
+vsd <- vst(dds, blind = TRUE)
+head(assay(vsd))
+# Plot PCA
+pca_patient = plotPCA(vsd, intgroup = "patient")
+pca_patient
+# ggsave("PCApatient.png",pca_patient) 
+pca_agent = plotPCA(vsd, intgroup = "agent")
+pca_agent
+# ggsave("PCAagent.png", pca_agent)
+pca_time = plotPCA(vsd, intgroup = "time")
+pca_time
+#ggsave("PCAtime.png",pca_time)
+# PCA para paciente y tratamiento. Vemos como la variabilidad en la expresión la marca el paciente
+plotPCA( vsd, intgroup = c( "patient", "agent"))
+# Calcular las componentes principales manualmente
+pca_result <- prcomp(t(assay(vsd)))
+# Extraer las coordenadas de las componentes principales
+pca_data <- as.data.frame(pca_result$x)
+str(metadata)
+colnames(pca_data)
+# Agregar los metadatos relevantes
+pca_data$patient <- metadata$patient
+pca_data$agent <- metadata$agent
+pca_data$time <- metadata$time
+pca_data$time <- factor(pca_data$time)
+# Crear un plot de PCA con coloración, forma y facetas por grupo para cada variable
+pca_complete <- ggplot(data = pca_data, aes(x = PC1, y = PC2, color = time, shape = agent)) +
+  geom_point(size = 3) +
+  scale_color_manual(name = "Time", values = c("24h" = "blue", "48h" = "red")) +
+  scale_shape_manual(name = "Agent", values = c("Control" = 16, "DPN" = 17, "OHT" = 18)) +
+  facet_wrap(~ patient) +
+  theme_minimal() +
+  labs(title = "PCA con coloración, forma y facetas por grupo para time, agent y patient")
+pca_complete
+# ggsave("PCA_complete.png", pca_complete,bg="white")
+
+## Calculamos las distancias a partir de las cuentas normalizadas y variance-stabilized (vst)
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$patient, vsd$agent, vsd$time, sep = "-")
+rownames(sampleDistMatrix)
+colnames(sampleDistMatrix) <- NULL
+sampleDistMatrix
+write.csv(sampleDistMatrix, "matriz_distancias.csv", row.names = TRUE)
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap_save= pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+pheatmap_save
+#ggsave("heatmap.png",pheatmap_save) 
+```
+
+## PREFILTRADO Y DGE DISEÑO 1
+```{r design 1}
+# PREFILTRADO DE DATOS PARA EL ANÁLISIS
+# Elimino los datos de la muestra GSM913896 (patient=4, agent=Control, time= 24h) del data frame de metadatos y de cuentas. 
+metadata_fil= metadata[-24,]
+rawcounts_fil= rawcounts[,-24]
+# Se filtran los datos para quedarnos solo con aquellos para los que time=24h.
+metadata_filtered <- metadata_fil[metadata_fil$time == "24h", ]
+rawcounts_filtered <- rawcounts[, rownames(metadata_filtered)]
+# Diseño 1. 
+dds <- DESeqDataSetFromMatrix(countData = rawcounts_filtered,
+                              colData = metadata_filtered,
+                              design = ~ patient + agent)
+# Vemos el contenido.
+head(dds)
+# Filtro para quedarme con genes de al menos 10 cuentas
+keep <- rowSums(counts(dds)) >= 10 
+dds <- dds[keep, ]
+# Hago una transformación con vst() útil para representaciones gráficas.
+vsd <- vst(dds, blind = TRUE)
+# Análisis de expresión diferencial. Normalización, control de la dispersión
+dds2 <- DESeq(dds, test = "Wald")
+# Análisis de dispersión
+plotDispEsts(dds2)
+# Fold change vs mean normalized counts
+plotMA(dds2)
+resultsNames(dds2)
+design(dds2)
+```
+# RESULTADOS CONTRASTES DISEÑO 1.
+```{r}
+name1="OHT_vs_Control_24h"
+name2="DPN_vs_Control_24h"
+contrast1 <- c("agent", "OHT", "Control")
+contrast2 <- c("agent", "DPN", "Control")
+# Contraste DPN vs control diseño 1
+results_design1 <- results(object=dds2, contrast=contrast2,
+                           alpha=0.05,
+                           lfcThreshold = 0,
+                           pAdjustMethod="BH",
+                           tidy=TRUE)
+dim(results_design1)
+# Eliminar filas donde padj es NA
+results_design1_filtered <- na.omit(results_design1)
+dim(results_design1_filtered)
+# Anotación de genes
+gene_symbols <- mapIds(org.Hs.eg.db, keys=results_design1_filtered$row, 
+                       column = "SYMBOL", keytype = "ENSEMBL",multiVals="first")
+# Agregar la columna de símbolos de gen 
+results_design1_filtered$Gene_symbol <- gene_symbols
+# Filtrar los resultados por padj < 0.05 y baseMean>=20.
+significant_genes <- results_design1_filtered[results_design1_filtered$padj < 0.05, ]
+significant_genes <- significant_genes[significant_genes$baseMean >= 20, ]
+if (nrow(significant_genes) == 0) {
+  print(paste("No hay resultados para el contraste ",name2,"con padj<0.05."))
+} else {
+  print(paste("El número de genes diferencialmente expresados con padj<0.05 para el contraste ",name2,"para el diseño 1 es",
+              nrow(significant_genes)))
+  # Ordenar los resultados filtrados por el valor absoluto de log2FoldChange en orden descendente
+  significant_genes <- significant_genes[order(-abs(significant_genes$log2FoldChange)), ]
+  # Exportar la tabla a un archivo .csv
+  write.csv(significant_genes, file = "DPNvsControl_24h_Design1-padj<0.05_LFCdesc.csv", row.names = FALSE)
+  # Seleccionar los primeros genes con p<0.05, baseMean>=20 y ordenados por magnitud de cambio (por ejemplo, los primeros 25)
+  top_genes <- head(significant_genes, 25)
+  ## Heatmap 1 de los genes TOP DGE ordenados por abs(LFC)
+  res_top2heatmap <- assay(vsd)[rownames(assay(vsd))%in%top_genes$row,]
+  #sample_names <- paste(metadata_fil$patient, metadata_fil$agent, metadata_fil$time, sep = "-")
+  #colnames(res_top2heatmap)=sample_names
+  gene_symbols_heatmap <- mapIds(org.Hs.eg.db, keys = rownames(res_top2heatmap), column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+  # Asignar los símbolos de los genes como nombres de fila en res_top2heatmap
+  rownames(res_top2heatmap) <- gene_symbols_heatmap
+  # Centro los datos para hacer el heatmap.
+ res_top2heatmap_Mean <- res_top2heatmap - rowMeans(res_top2heatmap)
+ pheatmap(res_top2heatmap_Mean, main="DPN_vs_Control_24h_Top25LFC_padj<0.05_Design1", cluster_cols=FALSE)
+ ## Heatmap 2 de los genes TOP DGE ordenados por abs(LFC) teniendo en cuenta el paciente
+  # Defining the annotation
+  annotation_col <- data.frame(
+    Treatment = c("Ctrl24h", "DPN24h","OHT24h","Ctrl24h", "DPN24h","OHT24h","Ctrl24h", "DPN24h","OHT24h","DPN24h","OHT24h"),
+    Patient = c("1","1","1","2","2","2","3","3","3","4","4")
+  )
+  # Defining the colors by group for plotting 
+  annotation_colors <- list(
+    Treatment = c(Ctrl24h="cadetblue2", DPN24h ="yellow", OHT24h = "purple"),
+    Patient = c(`1`="palegreen", `2` ="olivedrab2",`3`= "olivedrab3", `4`="olivedrab4")
+  )
+  length(rownames(annotation_col))
+  rownames(annotation_col) = rownames(metadata_filtered[,0])
+  pheatmap(res_top2heatmap_Mean, main="DPNvsControl_24h_Patient_Top25LFC_padj<0.05_Design1",annotation_col=annotation_col, annotation_colors=annotation_colors, cluster_cols=FALSE) 
+}
+ 
+ 
+##########   Contraste OHT vs control diseño 1    #########################
+results_design1_c1 <- results(object=dds2, contrast = contrast1,
+                           alpha=0.05,
+                           lfcThreshold = 0,
+                           pAdjustMethod="BH",
+                           tidy=TRUE)
+dim(results_design1_c1)
+# Eliminar filas donde padj es NA
+results_design1_c1_filtered <- na.omit(results_design1_c1)
+# Anotación de genes
+gene_symbols <- mapIds(org.Hs.eg.db, keys=results_design1_c1_filtered$row, column = "SYMBOL", keytype = "ENSEMBL",multiVals="first")
+#gene_symbols
+# Agregar la columna de símbolos de gen a el objeto de resultados
+results_design1_c1_filtered$Gene_symbol <- gene_symbols
+#head(results_design1_c1_filtered)
+# Filtrar los resultados por padj < 0.05 y baseMean>=20.
+significant_genes_c1 <- results_design1_c1_filtered[results_design1_c1_filtered$padj < 0.05, ]
+significant_genes_c1 <- significant_genes_c1[significant_genes_c1$baseMean >= 20, ]
+if (nrow(significant_genes_c1) == 0) {
+   print(paste("No hay resultados para el contraste ",name1,"con padj<0.05."))
+} else {
+  print(paste("El número de genes diferencialmente expresados con padj<0.05 para el contraste ",name1, "con el diseño 1 es", nrow(significant_genes_c1)))
+
+  # Ordenar los resultados filtrados por el valor absoluto de log2FoldChange en orden descendente
+  significant_genes_c1 <- significant_genes_c1[order(-abs(significant_genes_c1$log2FoldChange)), ]
+  # Exportar la tabla con la columna adicional a un archivo CSV
+  write.csv(significant_genes_c1, file = "OHTvsControl_24h_Design1-padj<0.05_LFCdesc.csv", row.names = FALSE)
+  # Seleccionar los primeros genes (por ejemplo, los primeros 25)
+  top_genesc1 <- head(significant_genes_c1, 25)
+  ## Heatmap de los genes TOP DGE ordenados por abs(LFC)
+  res_top3heatmap <- assay(vsd)[rownames(assay(vsd))%in%top_genesc1$row,]
+  sample_names <- paste(metadata_fil$patient, metadata_fil$agent, metadata_fil$time, sep = "-")
+  colnames(res_top3heatmap)=sample_names
+  gene_symbols_heatmap3 <- mapIds(org.Hs.eg.db, keys = rownames(res_top3heatmap), column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+  # Asignar los símbolos de los genes como nombres de fila en res_top3heatmap
+  rownames(res_top3heatmap) <- gene_symbols_heatmap3
+  res_top3heatmap_Mean <- res_top3heatmap - rowMeans(res_top2heatmap)
+  pheatmap(res_top3heatmap_Mean, main="OHT_vs_Control_24h_Top25LFC_padj<0.05_Design1", cluster_cols=FALSE)
+  # Defining the annotation
+  annotation_col <- data.frame(
+    Treatment = c("Ctrl24h", "DPN24h","OHT24h","Ctrl24h", "DPN24h","OHT24h","Ctrl24h", "DPN24h","OHT24h","DPN24h","OHT24h"),
+    Patient = c("1","1","1","2","2","2","3","3","3","4","4")
+  )
+  # Defining the colors by group for plotting 
+  annotation_colors <- list(
+    Treatment = c(Ctrl24h="cadetblue2", DPN24h ="yellow", OHT24h = "purple"),
+    Patient = c(`1`="palegreen", `2` ="olivedrab2",`3`= "olivedrab3", `4`="olivedrab4")
+  )
+  length(rownames(annotation_col))
+  rownames(annotation_col) = rownames(metadata_filtered[,0])
+  pheatmap(res_top3heatmap_Mean, main="OHTvsControl_24h_Patient_Top25LFC_padj<0.05_Design1",annotation_col=annotation_col, annotation_colors=annotation_colors, cluster_cols=FALSE) 
+}
+```
+
+
+
+## PREFILTRADO Y DGE PARA EL DISEÑO 2.
+
+```{r part 4}
+
+# Diseño 2
+# Creamos una variable adicional combinada que nos sirva para el análisis entre las variables agent y time
+metadata_fil$agent_time <- factor(paste0(metadata_fil$agent,metadata_fil$time))
+metadata_fil
+# Creamos el objeto DESeq usando un diseño que incluye al paciente (principal factor de variabilidad) y a la
+# variable agent_time combinada recien creada
+dds <- DESeqDataSetFromMatrix(countData = rawcounts_fil,
+                              colData = metadata_fil,
+                              design = ~ patient + agent_time)
+# Vemos el contenido.
+head(dds)
+# Filtro para quedarme con genes de al menos 10 cuentas
+keep <- rowSums(counts(dds)) >= 10 
+dds <- dds[keep, ]
+# Hago una transformación con vst() útil para representaciones gráficas.
+vsd <- vst(dds, blind = TRUE)
+# Análisis de expresión diferencial. Normalización, control de la dispersión
+dds2 <- DESeq(dds, test = "Wald")
+resultsNames(dds2)
+design(dds2)
+# Análisis de dispersión
+plotDispEsts(dds2)
+# Fold change vs mean normalized counts
+plotMA(dds2)
+res <- results(dds2)
+summary (res)
+
+```
+# RESULTADOS CONTRASTES DISEÑO 2
+
+```{r part5}
+##########   Contraste DPN vs Control diseño combinado 2  #########################
+name1="OHT_vs_Control_24h"
+name2="DPN_vs_Control_24h"
+contrast1 <- c("agent_time", "OHT24h", "Control24h")
+contrast2 <- c("agent_time", "DPN24h", "Control24h")
+results_design2_c1 <- results(object=dds2, contrast = contrast2,
+                           alpha=0.05,
+                           lfcThreshold = 0,
+                           pAdjustMethod="BH",
+                           tidy=TRUE)
+dim(results_design2_c1)
+# Eliminar filas donde padj es NA
+results_design2_c1_filtered <- na.omit(results_design2_c1)
+# Anotación de genes
+gene_symbols <- mapIds(org.Hs.eg.db, keys=results_design2_c1_filtered$row, column = "SYMBOL", keytype = "ENSEMBL",multiVals="first")
+# Agregar la columna de símbolos de gen a el objeto de resultados
+results_design2_c1_filtered$Gene_symbol <- gene_symbols
+# Filtrar los resultados por padj < 0.05 y baseMean>=20.
+significant_genes_c1 <- results_design2_c1_filtered[results_design2_c1_filtered$padj < 0.05, ]
+significant_genes_c1 <- significant_genes_c1[significant_genes_c1$baseMean >= 20, ]
+if (nrow(significant_genes_c1) == 0) {
+   print(paste("No hay resultados para el contraste ",name2,"con padj<0.05."))
+} else {
+  print(paste("El número de genes diferencialmente expresados con padj<0.05 para el contraste ",name2, "con el diseño 2 es", nrow(significant_genes_c1)))
+  # Ordenar los resultados filtrados por el valor absoluto de log2FoldChange en orden descendente
+  significant_genes_c1 <- significant_genes_c1[order(-abs(significant_genes_c1$log2FoldChange)), ]
+  # Exportar la tabla con la columna adicional a un archivo CSV
+  write.csv(significant_genes_c1, file = "DPNvsControl_24h_padj<0.05_LFCdesc_Design2.csv", row.names = FALSE)
+  # Seleccionar los primeros genes (por ejemplo, los primeros 25)
+  top_genesc1 <- head(significant_genes_c1, 25)
+  ## Heatmap de los genes TOP DGE ordenados por abs(LFC)
+  res_top3heatmap <- assay(vsd)[rownames(assay(vsd))%in%top_genesc1$row,]
+  #colnames(res_top3heatmap)=metadata_fil$agent_time
+  gene_symbols_heatmap <- mapIds(org.Hs.eg.db, keys = rownames(res_top3heatmap), column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+  # Asignar los símbolos de los genes como nombres de fila en res_top2heatmap
+  rownames(res_top3heatmap) <- gene_symbols_heatmap
+  # Centrar datos para el heatmap.
+  res_top3heatmap_Mean <- res_top3heatmap - rowMeans(res_top3heatmap)
+  #res_top3heatmap_Mean
+  pheatmap(res_top3heatmap_Mean, main="DPNvsCtrl_Top25LFC24h_padj<0.05_Design2", cluster_cols=FALSE)
+  # Defining the annotation
+  annotation_col <- data.frame(
+    Treatment_time = c("Ctrl24h", "Ctrl48h", "DPN24h", "DPN48h", "OHT24h","OHT48h","Ctrl24h", "Ctrl48h", "DPN24h", "DPN48h", "OHT24h","OHT48h","Ctrl24h", "Ctrl48h", "DPN24h", "DPN48h", "OHT24h","OHT48h","Ctrl48h", "DPN24h", "DPN48h", "OHT24h", "OHT48h"),
+    Patient = c("1","1","1","1","1","1","2","2","2","2","2","2","3","3","3","3","3","3","4","4","4","4","4")
+  )
+  # Defining the colors by group for plotting 
+  annotation_colors <- list(
+    Treatment_time = c(Ctrl24h="cadetblue2",Ctrl48h="blue", DPN24h ="yellow",DPN48h ="orange", OHT24h = "pink", OHT48h="purple"),
+    Patient = c("1"="palegreen", "2" ="olivedrab2","3"= "olivedrab3", "4"="olivedrab4")
+  )
+  length(rownames(annotation_col))
+  rownames(annotation_col) = rownames(metadata_fil[,0])
+  pheatmap(res_top3heatmap_Mean, main="DPNvsCtrl_Pat_Time_Top25LFC24h_padj<0.05_Design2",annotation_col=annotation_col, annotation_colors=annotation_colors, cluster_cols=FALSE) 
+}
+
+##########   Contraste OHT vs Control diseño combinado    #########################
+results_design2_c2 <- results(object=dds2, contrast = contrast1,
+                           alpha=0.05,
+                           lfcThreshold = 0,
+                           pAdjustMethod="BH",
+                           tidy=TRUE)
+dim(results_design2_c2)
+# Eliminar filas donde padj es NA
+results_design2_c2_filtered <- na.omit(results_design2_c2)
+# Anotación de genes
+gene_symbols <- mapIds(org.Hs.eg.db, keys=results_design2_c2_filtered$row, column = "SYMBOL", keytype = "ENSEMBL",multiVals="first")
+#gene_symbols
+# Agregar la columna de símbolos de gen a el objeto de resultados
+results_design2_c2_filtered$Gene_symbol <- gene_symbols
+#head(results_design1_c1_filtered)
+# Filtrar los resultados por padj < 0.05 y baseMean>=20.
+significant_genes_c2 <- results_design2_c2_filtered[results_design2_c2_filtered$padj < 0.05, ]
+significant_genes_c2 <- significant_genes_c2[significant_genes_c2$baseMean >= 20, ]
+if (nrow(significant_genes_c2) == 0) {
+   print(paste("No hay resultados para el contraste ",name1,"con padj<0.05."))
+} else {
+  print(paste("El número de genes diferencialmente expresados con padj<0.05 para el contraste ",name1, "con el diseño 2 es", nrow(significant_genes_c2)))
+
+  # Ordenar los resultados filtrados por el valor absoluto de log2FoldChange en orden descendente
+  significant_genes_c2 <- significant_genes_c2[order(-abs(significant_genes_c2$log2FoldChange)), ]
+  # Exportar la tabla con la columna adicional a un archivo CSV
+  write.csv(significant_genes_c2, file = "OHTvsControl_24h_padj<0.05_LFCdesc_Design2`.csv", row.names = FALSE)
+  # Seleccionar los primeros genes (por ejemplo, los primeros 25)
+  top_genesc2 <- head(significant_genes_c2, 25)
+  ## Heatmap de los genes TOP DGE ordenados por LFC
+  res_top3heatmap <- assay(vsd)[rownames(assay(vsd))%in%top_genesc2$row,]
+  pheatmap(res_top3heatmap, 
+          main = "OHTvsCtrl_Top25LFC24h_padj<0.05_Design2", 
+          cluster_cols = FALSE)
+  # Anotación de genes en el heatmap
+  gene_symbols_heatmap <- mapIds(org.Hs.eg.db, keys = rownames(res_top3heatmap), column = "SYMBOL", keytype = "ENSEMBL", multiVals = "first")
+  # Asignar los símbolos de los genes como nombres de fila en res_top2heatmap
+  rownames(res_top3heatmap) <- gene_symbols_heatmap
+  # Centrar datos.
+ res_top3heatmap_Mean <- res_top3heatmap - rowMeans(res_top3heatmap)
+ pheatmap(res_top3heatmap_Mean, main="OHTvsControl_Top25LFC24h_padj<0.05_Design2", cluster_cols=FALSE)
+  # Defining the annotation
+  annotation_col <- data.frame(
+    Treatment_time = c("Ctrl24h", "Ctrl48h", "DPN24h", "DPN48h", "OHT24h","OHT48h","Ctrl24h", "Ctrl48h", "DPN24h", "DPN48h", "OHT24h","OHT48h","Ctrl24h", "Ctrl48h", "DPN24h", "DPN48h", "OHT24h","OHT48h","Ctrl48h", "DPN24h", "DPN48h", "OHT24h", "OHT48h"),
+    Patient = c("1","1","1","1","1","1","2","2","2","2","2","2","3","3","3","3","3","3","4","4","4","4","4")
+  )
+  # Defining the colors by group for plotting 
+  annotation_colors <- list(
+    Treatment_time = c(Ctrl24h="cadetblue2",Ctrl48h="blue", DPN24h ="yellow",DPN48h ="orange", OHT24h = "pink", OHT48h="purple"),
+    Patient = c("1"="palegreen", "2" ="olivedrab2","3"= "olivedrab3", "4"="olivedrab4")
+  )
+  length(rownames(annotation_col))
+  rownames(annotation_col) = rownames(metadata_fil[,0])
+  pheatmap(res_top3heatmap_Mean, main="OHTvsCtrl_Pat_Time_Top25LFC24h_padj<0.05_Design2",annotation_col=annotation_col, annotation_colors=annotation_colors, cluster_cols=FALSE) 
+}
+```
+
